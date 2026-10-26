@@ -90,6 +90,10 @@ class EventAnalyticsTests(unittest.TestCase):
         frame = build_event_frame([{"status": None}])
         self.assertIsNone(calculate_metrics(frame)["success_rate"])
 
+    def test_event_sources_default_to_api_and_preserve_archive_source(self):
+        frame = build_event_frame([{}, {"source": "S3 login simulator"}])
+        self.assertEqual(frame["source"].tolist(), ["AWS API", "S3 login simulator"])
+
     def test_filters_combine_and_search_is_case_insensitive(self):
         filtered = filter_events(
             self.frame,

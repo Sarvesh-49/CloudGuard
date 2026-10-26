@@ -20,7 +20,8 @@ The existing API Gateway endpoint is the default, so the dashboard can run witho
 
 - **Overview:** filtered KPIs, severity and login-outcome charts, a time-bucketed event timeline, recent high-risk events, frequent failed-login source IPs, and recent activity.
 - **Event explorer:** combined search and filters, sorting, event details, and CSV export of the filtered records.
-- Data is fetched from the configured API. There is no demo or mock-data mode.
+- **Login simulator:** generates synthetic failed-login events without requesting or storing passwords. Attempts 1–2 are Normal, attempts 3–4 are Medium, and attempt 5 or later is High.
+- Overview and Event Explorer use configured API records plus simulator events from this session and, when configured, the S3 archive. The simulator is explicitly separate from real authentication.
 - API results are cached for 60 seconds. Use **Refresh events** to request a fresh copy.
 
 ## Tests
@@ -37,6 +38,9 @@ The tests use isolated event fixtures; the running dashboard always uses API dat
 
 - Never put AWS access keys, passwords, or private event logs in source control. `.env` is gitignored.
 - On EC2, set `CLOUDGUARD_APP_ENV=production` and `CLOUDGUARD_API_URL` in the process environment. The app then does not load a local `.env` file.
-- The dashboard reads events over HTTPS from API Gateway; it does not call DynamoDB or require AWS SDK credentials.
+- Live API reads use HTTPS through API Gateway and do not require AWS SDK credentials. Optional S3 archiving/loading uses the normal AWS credential provider chain and needs the restricted bucket permissions below.
 - Restrict inbound network access. For public access, use a TLS-terminating reverse proxy or managed front end rather than exposing Streamlit directly. If exposing Streamlit on port 8501 for a private demonstration, limit access to the necessary network.
-- Do not create AWS resources as part of app startup. S3 archiving and SNS notifications are not implemented.
+- Optional simulator archiving uses `CLOUDGUARD_S3_BUCKET` and an **existing private bucket**. The app never creates buckets or changes AWS resources. Leave the value empty to keep simulator events in the current Streamlit session only.
+- Keep S3 Block Public Access enabled. The app stores only allowlisted event metadata under `cloudguard/login-simulator/` and requests SSE-S3 (`AES256`) encryption.
+- Use an EC2 instance role or the normal AWS credential provider chain, never source-code access keys. Grant only `s3:PutObject` and `s3:GetObject` for `arn:aws:s3:::YOUR_BUCKET/cloudguard/login-simulator/*`, plus `s3:ListBucket` on `arn:aws:s3:::YOUR_BUCKET` restricted to the `cloudguard/login-simulator/*` prefix. Do not grant bucket creation, public ACL, or public-read permissions.
+- Real S3 uploads require a configured bucket and valid AWS identity/permissions. The automated tests use a fake S3 client and do not create or contact AWS resources. SNS notifications are not implemented.

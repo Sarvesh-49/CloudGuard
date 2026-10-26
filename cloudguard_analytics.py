@@ -13,6 +13,7 @@ EVENT_COLUMNS = [
     "ip_address",
     "failed_attempts",
     "message",
+    "source",
 ]
 
 
@@ -65,6 +66,7 @@ def build_event_frame(events):
         if column not in frame.columns:
             frame[column] = None
 
+    frame["source"] = frame["source"].map(safe_text).replace("", "AWS API")
     frame["_timestamp"] = pd.to_datetime(frame["timestamp"], errors="coerce", utc=True)
     frame["_attempts"] = pd.to_numeric(frame["failed_attempts"], errors="coerce")
     frame["_severity"] = frame["severity"].map(safe_text).replace("", "Unknown")

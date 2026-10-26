@@ -20,6 +20,13 @@ from cloudguard_analytics import (
     timeline_events,
     top_failed_ips,
 )
+from cloudguard_login_simulator import (
+    HIGH_RISK_THRESHOLD,
+    SIMULATOR_IP_ADDRESS,
+    SIMULATOR_USERNAME,
+    create_failed_login_event,
+)
+from cloudguard_s3 import archive_login_event, load_archived_login_events
 
 
 st.set_page_config(
@@ -33,6 +40,7 @@ DEFAULT_API_URL = "https://xh2un2w7y6.execute-api.us-east-1.amazonaws.com/dev"
 if os.getenv("CLOUDGUARD_APP_ENV", "development").casefold() == "development":
     load_dotenv()
 API_URL = os.getenv("CLOUDGUARD_API_URL", "").strip() or DEFAULT_API_URL
+S3_BUCKET = os.getenv("CLOUDGUARD_S3_BUCKET", "").strip()
 SEVERITY_COLORS = {
     "Critical": "#f04452",
     "High": "#ff7a36",
@@ -88,6 +96,7 @@ st.markdown(
     .cg-page-title { color: var(--cg-text); font-size: 1.45rem; line-height: 1.2; font-weight: 700; }
     .cg-page-subtitle { color: var(--cg-muted); font-size: 0.78rem; margin-top: 0.2rem; }
     .cg-live { color: var(--cg-green); font-size: 0.74rem; font-weight: 700; text-align: right; white-space: nowrap; }
+    .cg-api-down { color: var(--cg-red); font-size: 0.74rem; font-weight: 700; text-align: right; white-space: nowrap; }
     .cg-refresh-meta { color: var(--cg-muted); font-size: 0.68rem; text-align: right; }
     .cg-feed-row { padding: 0.48rem 0; border-bottom: 1px solid var(--cg-line); }
     .cg-feed-title { color: var(--cg-text); font-size: 0.76rem; font-weight: 600; }
@@ -113,6 +122,11 @@ def load_events(api_url):
     response.raise_for_status()
     events, malformed_count = parse_api_payload(response.json())
     return events, malformed_count, datetime.now(timezone.utc)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_s3_events(bucket):
+    return load_archived_login_events(bucket)
 
 
 def make_chart_layout(figure, height=260):
@@ -147,7 +161,7 @@ st.sidebar.markdown(
 st.sidebar.markdown("#### Workspace")
 page = st.sidebar.radio(
     "Workspace view",
-    ["Overview", "Event explorer"],
+    ["Overview", "Event explorer", "Login simulator"],
     label_visibility="collapsed",
     key="active_page",
 )
@@ -161,24 +175,45 @@ if st.sidebar.button("Clear filters", width="stretch"):
         "username_filter",
         "ip_filter",
         "date_filter",
+        "_date_filter_bounds",
         "sort_filter",
     ):
         st.session_state.pop(key, None)
     st.rerun()
 st.sidebar.text_input("Search events", placeholder="User, IP, severity, status, ID", key="search_filter")
 
+api_error = ""
 try:
     with st.spinner("Loading live events from the configured API..."):
         events, malformed_count, refreshed_at = load_events(API_URL)
 except requests.exceptions.Timeout:
-    st.error("The events API did not respond within 15 seconds. Check the API URL and network, then refresh.")
-    st.stop()
+    api_error = "The events API did not respond within 15 seconds. Check the API URL and network, then refresh."
+    events, malformed_count, refreshed_at = [], 0, None
 except requests.exceptions.RequestException:
-    st.error("Could not reach the events API. Check the configured API URL and network, then refresh.")
-    st.stop()
+    api_error = "Could not reach the events API. Check the configured API URL and network, then refresh."
+    events, malformed_count, refreshed_at = [], 0, None
 except (ValueError, TypeError):
-    st.error("The events API returned an invalid response. Check the API response format, then refresh.")
-    st.stop()
+    api_error = "The events API returned an invalid response. Check the API response format, then refresh."
+    events, malformed_count, refreshed_at = [], 0, None
+
+session_simulator_events = st.session_state.setdefault("simulator_events", [])
+archived_events = []
+s3_load_error = False
+if S3_BUCKET:
+    try:
+        archived_events = load_s3_events(S3_BUCKET)
+    except Exception:
+        s3_load_error = True
+
+events_by_id = {}
+unidentified_events = []
+for event in [*events, *archived_events, *session_simulator_events]:
+    event_id = safe_text(event.get("event_id"))
+    if event_id:
+        events_by_id[event_id] = event
+    else:
+        unidentified_events.append(event)
+events = [*unidentified_events, *events_by_id.values()]
 
 frame = build_event_frame(events)
 severity_options = sorted(frame["_severity"].unique().tolist())
@@ -200,14 +235,20 @@ date_range = None
 if not timestamp_values.empty:
     min_date = timestamp_values.min().date()
     max_date = timestamp_values.max().date()
+    date_bounds = (min_date, max_date)
+    previous_bounds = st.session_state.get("_date_filter_bounds")
+    current_date_range = st.session_state.get("date_filter")
+    if current_date_range is None or previous_bounds is None or tuple(current_date_range) == previous_bounds:
+        st.session_state["date_filter"] = date_bounds
+    st.session_state["_date_filter_bounds"] = date_bounds
     date_range = st.sidebar.date_input(
         "Timestamp range",
-        value=(min_date, max_date),
         min_value=min_date,
         max_value=max_date,
         key="date_filter",
     )
 else:
+    st.session_state["_date_filter_bounds"] = None
     st.sidebar.caption("No valid timestamps are available for date filtering.")
 
 filtered = filter_events(
@@ -231,14 +272,19 @@ with header_columns[0]:
 with header_columns[1]:
     if st.button("Refresh", icon=":material/refresh:", help="Fetch live events now", width="stretch"):
         load_events.clear()
+        load_s3_events.clear()
         st.rerun()
-    st.markdown('<div class="cg-live">● API LIVE</div>', unsafe_allow_html=True)
-    st.markdown(
-        f'<div class="cg-refresh-meta">Updated {refreshed_at.strftime("%H:%M:%S UTC")}</div>',
-        unsafe_allow_html=True,
-    )
+    status_class = "cg-live" if not api_error else "cg-api-down"
+    status_text = "● API LIVE" if not api_error else "● API UNAVAILABLE"
+    st.markdown(f'<div class="{status_class}">{status_text}</div>', unsafe_allow_html=True)
+    refresh_text = f"Updated {refreshed_at.strftime('%H:%M:%S UTC')}" if refreshed_at else "No successful API refresh"
+    st.markdown(f'<div class="cg-refresh-meta">{refresh_text}</div>', unsafe_allow_html=True)
 if malformed_count:
     st.warning(f"Ignored {malformed_count} malformed event record(s) returned by the API.")
+if api_error:
+    st.warning(api_error)
+if s3_load_error:
+    st.warning("Could not load saved simulator events from S3. Current-session simulator events remain available.")
 
 metric_columns = st.columns(6)
 metric_values = [
@@ -412,7 +458,7 @@ if page == "Overview":
             with st.container(border=True):
                 st.markdown("#### Recent activity")
                 activity = event_table(filtered).head(12)
-                activity = activity[["timestamp", "username", "ip_address", "status", "severity"]]
+                activity = activity[["timestamp", "username", "ip_address", "status", "severity", "source"]]
                 st.dataframe(activity, width="stretch", hide_index=True, height=310)
 
         with bottom_columns[1]:
@@ -430,7 +476,7 @@ if page == "Overview":
 
         st.caption("Live API records · Severity labels are rule-based indicators, not proof of malicious activity.")
 
-else:
+elif page == "Event explorer":
     explorer_header = st.columns([3, 1])
     explorer_header[0].markdown("#### Event explorer")
     explorer_header[0].caption("Search, filter, inspect, and export matching live API records.")
@@ -471,6 +517,96 @@ else:
         ):
             column.caption(label)
             column.write(safe_text(selected_event.get(key)) or "Not provided")
+
+else:
+    st.markdown("#### Failed-login simulator")
+    st.caption(
+        "Training simulation only. No password is requested, checked, or stored. "
+        "The account and TEST-NET address below are synthetic."
+    )
+    attempt_count = int(st.session_state.get("simulator_attempt_count", 0))
+    simulator_columns = st.columns([1, 1, 1.4])
+    simulator_columns[0].metric("Failed attempts", attempt_count)
+    simulator_columns[1].metric("High-risk threshold", f"{HIGH_RISK_THRESHOLD} attempts")
+    simulator_columns[2].metric("Synthetic account", SIMULATOR_USERNAME)
+    st.caption(f"Source address: {SIMULATOR_IP_ADDRESS} · Reserved for documentation and examples")
+    st.progress(min(attempt_count / HIGH_RISK_THRESHOLD, 1.0))
+
+    if st.button(
+        "Simulate failed login",
+        type="primary",
+        icon=":material/lock:",
+        help="Records a synthetic failed-login event; no password is entered.",
+    ):
+        attempt_count += 1
+        st.session_state["simulator_attempt_count"] = attempt_count
+        event = create_failed_login_event(
+            SIMULATOR_USERNAME,
+            SIMULATOR_IP_ADDRESS,
+            attempt_count,
+        )
+        st.session_state["simulator_events"].append(event)
+        st.session_state["simulator_events"] = st.session_state["simulator_events"][-100:]
+        st.session_state["last_simulator_event"] = event
+
+        if S3_BUCKET:
+            try:
+                object_key = archive_login_event(event, S3_BUCKET)
+                st.session_state["simulator_feedback"] = (
+                    "success",
+                    f"Simulator event archived to the configured S3 bucket: {object_key}",
+                )
+                load_s3_events.clear()
+            except Exception:
+                st.session_state["simulator_feedback"] = (
+                    "error",
+                    "S3 archival failed. The event remains visible for this session; check bucket access and IAM permissions.",
+                )
+        else:
+            st.session_state["simulator_feedback"] = (
+                "warning",
+                "No S3 bucket is configured. This event is visible for this session only; set CLOUDGUARD_S3_BUCKET to an existing private bucket to archive it.",
+            )
+        st.rerun()
+
+    if st.button("Reset attempt counter"):
+        st.session_state["simulator_attempt_count"] = 0
+        st.session_state.pop("last_simulator_event", None)
+        st.session_state.pop("simulator_feedback", None)
+        st.rerun()
+
+    feedback = st.session_state.get("simulator_feedback")
+    if feedback:
+        feedback_kind, feedback_message = feedback
+        if feedback_kind == "success":
+            st.success(feedback_message)
+        elif feedback_kind == "error":
+            st.error(feedback_message)
+        else:
+            st.warning(feedback_message)
+
+    last_event = st.session_state.get("last_simulator_event")
+    if last_event:
+        if last_event["severity"] == "High":
+            st.error(f"High severity: failed-login threshold reached on attempt {last_event['failed_attempts']}.")
+        elif last_event["severity"] == "Medium":
+            st.warning(f"Medium severity: {last_event['failed_attempts']} failed attempts recorded.")
+        else:
+            st.info(f"Normal severity: {last_event['failed_attempts']} failed attempt(s) recorded.")
+        st.markdown("#### Latest simulated event")
+        st.markdown(f'<div class="cg-context">{html.escape(explain_event(last_event))}</div>', unsafe_allow_html=True)
+
+    simulator_history = frame[frame["source"].str.contains("login simulator", case=False, na=False)]
+    st.markdown("#### Simulator event history")
+    if simulator_history.empty:
+        st.info("No simulator events recorded yet.")
+    else:
+        st.dataframe(
+            event_table(simulator_history).head(25),
+            width="stretch",
+            hide_index=True,
+            height=330,
+        )
 
 st.markdown('<div class="cg-divider"></div>', unsafe_allow_html=True)
 st.caption(
