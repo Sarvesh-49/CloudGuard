@@ -1,6 +1,8 @@
 import unittest
 
 from cloudguard_login_simulator import (
+    HIGH_RISK_THRESHOLD,
+    create_demo_sequence,
     create_failed_login_event,
     severity_for_failed_attempts,
 )
@@ -20,6 +22,7 @@ class LoginSimulatorTests(unittest.TestCase):
         self.assertEqual(event["severity"], "High")
         self.assertEqual(event["status"], "Failed")
         self.assertEqual(event["source"], "Login simulator")
+        self.assertEqual(event["detector"], "CloudGuard rule engine")
         self.assertNotIn("password", event)
         self.assertTrue(event["event_id"].startswith("SIM-"))
 
@@ -31,6 +34,11 @@ class LoginSimulatorTests(unittest.TestCase):
             create_failed_login_event("", "192.0.2.10", 1)
         with self.assertRaises(ValueError):
             create_failed_login_event("demo-user", "not-an-ip", 1)
+
+    def test_demo_sequence_covers_threshold(self):
+        events = create_demo_sequence()
+        self.assertEqual(len(events), HIGH_RISK_THRESHOLD)
+        self.assertEqual([event["severity"] for event in events], ["Normal", "Normal", "Medium", "Medium", "High"])
 
 
 if __name__ == "__main__":

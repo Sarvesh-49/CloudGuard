@@ -17,6 +17,7 @@ ARCHIVE_EVENT_FIELDS = frozenset(
         "failed_attempts",
         "message",
         "source",
+        "detector",
     }
 )
 

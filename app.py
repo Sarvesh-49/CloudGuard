@@ -24,6 +24,7 @@ from cloudguard_login_simulator import (
     HIGH_RISK_THRESHOLD,
     SIMULATOR_IP_ADDRESS,
     SIMULATOR_USERNAME,
+    create_demo_sequence,
     create_failed_login_event,
 )
 from cloudguard_s3 import archive_login_event, load_archived_login_events
@@ -532,6 +533,46 @@ else:
     st.caption(f"Source address: {SIMULATOR_IP_ADDRESS} · Reserved for documentation and examples")
     st.progress(min(attempt_count / HIGH_RISK_THRESHOLD, 1.0))
 
+    demo_columns = st.columns([1.5, 1])
+    if demo_columns[0].button(
+        "Run five-attempt demo",
+        type="primary",
+        icon=":material/play_arrow:",
+        help="Generate attempts 1 through 5, detect the fifth as High, and archive each event if S3 is configured.",
+        width="stretch",
+    ):
+        demo_events = create_demo_sequence()
+        st.session_state["simulator_events"].extend(demo_events)
+        st.session_state["simulator_events"] = st.session_state["simulator_events"][-100:]
+        st.session_state["simulator_attempt_count"] = HIGH_RISK_THRESHOLD
+        st.session_state["last_simulator_event"] = demo_events[-1]
+        if S3_BUCKET:
+            try:
+                archived_keys = [archive_login_event(event, S3_BUCKET) for event in demo_events]
+                st.session_state["simulator_feedback"] = (
+                    "success",
+                    f"Demo complete: {len(demo_events)} events archived to S3. High severity detected on attempt {HIGH_RISK_THRESHOLD}.",
+                )
+                st.session_state["last_archive_keys"] = archived_keys
+                load_s3_events.clear()
+            except Exception:
+                st.session_state["simulator_feedback"] = (
+                    "error",
+                    "Demo detection completed, but S3 archival failed. Events remain visible for this session.",
+                )
+        else:
+            st.session_state["simulator_feedback"] = (
+                "warning",
+                f"Demo complete: {len(demo_events)} events detected. No S3 bucket is configured, so the events are session-only.",
+            )
+        st.rerun()
+
+    if demo_columns[1].button("Reset attempt counter"):
+        st.session_state["simulator_attempt_count"] = 0
+        st.session_state.pop("last_simulator_event", None)
+        st.session_state.pop("simulator_feedback", None)
+        st.rerun()
+
     if st.button(
         "Simulate failed login",
         type="primary",
@@ -567,12 +608,6 @@ else:
                 "warning",
                 "No S3 bucket is configured. This event is visible for this session only; set CLOUDGUARD_S3_BUCKET to an existing private bucket to archive it.",
             )
-        st.rerun()
-
-    if st.button("Reset attempt counter"):
-        st.session_state["simulator_attempt_count"] = 0
-        st.session_state.pop("last_simulator_event", None)
-        st.session_state.pop("simulator_feedback", None)
         st.rerun()
 
     feedback = st.session_state.get("simulator_feedback")

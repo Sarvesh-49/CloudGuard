@@ -24,6 +24,14 @@ The existing API Gateway endpoint is the default, so the dashboard can run witho
 - Overview and Event Explorer use configured API records plus simulator events from this session and, when configured, the S3 archive. The simulator is explicitly separate from real authentication.
 - API results are cached for 60 seconds. Use **Refresh events** to request a fresh copy.
 
+### Presentation walkthrough
+
+1. Open **Login simulator**.
+2. Click **Run five-attempt demo**. This creates five synthetic log records in order.
+3. Explain that the CloudGuard **rule engine** evaluates `failed_attempts`: the fifth record is classified High. This is not a machine-learning model and does not prove malicious activity.
+4. With `CLOUDGUARD_S3_BUCKET` configured, the five metadata-only events are written to the existing private S3 bucket with SSE-S3 encryption. Without it, the app clearly reports that the demo is session-only.
+5. Open **Overview** or **Event explorer**. The new High event and the other simulator records appear alongside the live API data.
+
 ## Tests
 
 Run the deterministic helper tests with:

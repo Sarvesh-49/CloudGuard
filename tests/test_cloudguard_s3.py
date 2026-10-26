@@ -15,6 +15,7 @@ class S3ArchiveTests(unittest.TestCase):
             "severity": "High",
             "status": "Failed",
             "failed_attempts": 5,
+            "detector": "CloudGuard rule engine",
         }
 
         key = archive_login_event(event, "private-bucket", s3_client=client)

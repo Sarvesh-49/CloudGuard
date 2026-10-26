@@ -6,6 +6,7 @@ from uuid import uuid4
 SIMULATOR_USERNAME = "demo-user"
 SIMULATOR_IP_ADDRESS = "192.0.2.10"
 HIGH_RISK_THRESHOLD = 5
+DETECTOR_NAME = "CloudGuard rule engine"
 
 
 def severity_for_failed_attempts(failed_attempts):
@@ -38,4 +39,12 @@ def create_failed_login_event(username, ip_address, failed_attempts):
         "failed_attempts": failed_attempts,
         "message": f"Simulated failed login attempt {failed_attempts}.",
         "source": "Login simulator",
+        "detector": DETECTOR_NAME,
     }
+
+
+def create_demo_sequence(username=SIMULATOR_USERNAME, ip_address=SIMULATOR_IP_ADDRESS):
+    return [
+        create_failed_login_event(username, ip_address, failed_attempts)
+        for failed_attempts in range(1, HIGH_RISK_THRESHOLD + 1)
+    ]
